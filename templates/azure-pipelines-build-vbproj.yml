@@ -1,0 +1,64 @@
+ parameters:
+  UpdateAssemblyFile: 'false'  # defaults for any parameters that aren't specified
+  restoreDotNet: 'false'
+  PackageRestoreDirectory: $(System.DefaultWorkingDirectory)/packages
+
+ steps:
+  - ${{ if eq(parameters.UpdateAssemblyFile, 'true') }}:
+    - task: PowerShell@2
+      displayName: 'Updating Assembly Info File'
+      inputs:
+        targetType: filePath
+        filePath: '$(BuildToolsPath)/Scripts/Update-AssemblyInfoFile.ps1'
+        arguments: "-Path '$(PathtoAssemblyInfo)' -TagPrefix $(TagPrefix)"
+        failOnStderr: true
+        ignoreLASTEXITCODE: true
+
+  - task: NuGetCommand@2
+    displayName: 'NuGet restore'
+    inputs:
+      restoreSolution: ${{ parameters.PackageConfig }}
+      restoreDirectory: ${{ parameters.PackageRestoreDirectory }}
+      vstsFeed: '3d91fb22-11fd-455d-bff9-6bd7535f0d30'
+    enabled: true
+
+  - ${{ if eq(parameters.restoreDotNet, 'true') }}:
+    - task: DotNetCoreCLI@2
+      inputs:
+        command: restore
+
+  - powershell: 'nuget.exe install NUnit3TestAdapter -source nuget.org'
+    displayName: 'Install NUnit3TestAdapter'
+    enabled: true
+
+  - task: MSBuild@1
+    displayName: 'Build ${{ parameters.PathtoSolution }}'
+    inputs:
+      solution: ${{ parameters.PathtoSolution }}
+      msbuildVersion:  ${{ parameters.msbuildVersion }}
+      msbuildArchitecture:  ${{ parameters.msbuildArchitecture }}
+      platform: ${{ parameters.msbuildPlatform }}
+      configuration:  ${{ parameters.msbuildconfiguration }}
+      msbuildArguments: '/t:WebPublish /p:WebPublishMethod=FileSystem /p:DeleteExistingFiles=True /p:publishUrl=${{ parameters.msbuildOutputPath }}'
+    continueOnError: false
+    enabled: true
+
+  - powershell: |
+          Get-ChildItem ${{ parameters.msbuildOutputPath }}
+
+  - task: CopyFiles@2
+    displayName: 'Copy ArtifactFiles to drop folder'
+    inputs:
+      SourceFolder:  ${{ parameters.msbuildOutputPath }}
+      Contents: |
+        **
+        !**/packages.config
+        !.pipelines/**
+        !**/*.xml
+        !**/*.sln
+        !**/*.suo
+        !**/*.vbproj
+        !**/*.vb
+        !**/*.csproj
+        !**/*.cs
+      TargetFolder: '$(Build.ArtifactStagingDirectory)'
