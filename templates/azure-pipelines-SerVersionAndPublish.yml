@@ -1,0 +1,109 @@
+parameters:
+  TagPrefix: 'WebApp'
+  ApplicationName: $(ApplicationName)
+  PackageName: $(PackageName)
+  PublishDirectory: $(Build.ArtifactStagingDirectory)
+  MainPackageFeed: inmotivpackages
+  UpdateVersionInFiles: ''
+  PathToAssemblyInfo: ''
+  ForcePublish: ''
+  
+steps:
+  - powershell: |
+      # Set GitVersion arguments
+      ${{ format('$TagPrefix = "{0}"', parameters.TagPrefix) }}    
+      ${{ format('$PathToAssemblyInfo = "{0}"', parameters.PathToAssemblyInfo) }}  
+      $args = "/overrideconfig tag-prefix=$TagPrefix-"
+      if ($PathToAssemblyInfo -ne '') {
+         $args += " /updateassemblyinfo $PathToAssemblyInfo"
+      }
+      Write-Host "##vso[task.setvariable variable=GitVersionArgs;]$args" 
+    displayName: '# Set GitVersion arguments'
+
+  - task: e5983830-3f75-11e5-82ed-81492570a08e@5
+    displayName: "GitVersion"
+    inputs:
+      additionalArguments: "$(GitVersionArgs)"  
+
+  - powershell: |
+      Set-Location Env:
+      Get-ChildItem | Where-Object {$_.Name -like 'GitVersion*'}
+
+      $VersionId = If ('$(Build.SourceBranch)' -eq 'refs/heads/master') {
+        $env:GitVersion_MajorMinorPatch
+      } Else {
+        $meta = If ( $env:GITVERSION_BUILDMETADATA ) { $env:GITVERSION_BUILDMETADATA } Else { 0 }
+        $env:GitVersion_SemVer + '.' + $meta
+      }
+      
+      ${{ format('$Feed = "{0}"', parameters.MainPackageFeed) }} 
+
+      If ('$(GitVersion.BranchName)' -like '*develop*' -or '$(GitVersion.BranchName)' -like 'feat*' ) {
+        $Feed = $Feed + '-alpha'        
+      } 
+      
+      Write-Host "Publishing $VersionId to $Feed"
+
+      #send to Pipeline
+      Write-Host "##vso[task.setvariable variable=Build.SemVerId;]$VersionId"  
+      Write-Host "##vso[task.setvariable variable=PackageFeed;]$Feed"
+    displayName: "Update Version Variables and PackageFeed"  
+
+  - powershell: |
+      ${{ format('$file = "{0}"', parameters.UpdateVersionInFiles) }}         
+
+      $content = Get-Content $file
+      $lines = $content | Select-String -Pattern 'Version.+' | Out-string
+      $regex = "(?:\d{1,3}\.){2,}\d{1,3}"
+      If ($lines -match $regex) {
+        $SourceSemVer = $matches[0]
+      }
+      $content = $content -Replace $SourceSemVer, '$(Build.SemVerId)'
+      $content | Set-Content $file
+    displayName: 'Update Version in files ${{ parameters.UpdateVersionInFiles }}'
+    condition: ne(variables['UpdateVersionInFiles'],'')
+  
+  - task: ArchiveFiles@2
+    inputs:
+      rootFolderOrFile: ${{ parameters.PublishDirectory }}
+      includeRootfolder: false
+      archiveType: "zip" # Options: zip, 7z, tar, wim
+      archiveFile:  ${{ parameters.PublishDirectory }}/drop/${{ parameters.ApplicationName }}.zip
+
+  - task: PublishBuildArtifacts@1
+    displayName: "Publish Artifact as drop"
+    inputs:
+      pathtoPublish: ${{ parameters.PublishDirectory }}/drop
+
+  # Only tag and publish:
+  # when commits are done in master/develop
+  # when release or hotfix branches are opening a pull request on the master branch
+  
+  - powershell: |      
+      Write-Host 'Publishing..'
+      Write-Host 'Source Branch: $(System.Pullrequest.SourceBranch), Target Branch: $(System.Pullrequest.TargetBranch), ForcePublish: $(ForcePublish)'
+      Write-Host "##vso[task.setvariable variable=PublishToFeed;]True"      
+
+    condition: |
+        or(
+          and( or(startsWith(variables['System.Pullrequest.SourceBranch'], 'release'),startsWith(variables['System.Pullrequest.SourceBranch'], 'hotfix')), in(variables['System.PullRequest.TargetBranch'],'master', 'develop'))
+          , in(variables['Build.SourceBranchName'], 'master', 'develop')
+          , eq(variables['ForcePublish'], 'True')
+        )   
+  
+  - template: azure-pipelines-tag-bitbucket.yml
+    parameters:
+      SemVerId: $(Build.SemVerId)
+      TagPrefix: $(TagPrefix)      
+
+  - task: UniversalPackages@0
+    displayName: "Universal publish"
+    inputs:
+      command: publish
+      publishDirectory: ${{ parameters.PublishDirectory }}
+      vstsFeedPublish: $(PackageFeed)
+      vstsFeedPackagePublish: ${{ parameters.PackageName }}
+      versionOption: custom
+      versionPublish: "$(Build.SemVerId)"
+      packagePublishDescription: "$(ApplicationName)"
+    condition: and(succeeded(),eq(variables['PublishToFeed'],'True'))
