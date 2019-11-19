@@ -1,4 +1,5 @@
 # Starter pipeline
+
 # Start with a minimal pipeline that you can customize to build and deploy your code.
 # Add steps that build, run tests, deploy, and more:
 # https://aka.ms/yaml
@@ -10,10 +11,13 @@ pool:
   vmImage: 'ubuntu-latest'
 
 steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+- task: UniversalPackages@0
+  inputs:
+    command: 'publish'
+    publishDirectory: '$(Pipeline.Workspace)'
+    feedsToUsePublish: 'internal'
+    vstsFeedPublish: 'c1ce2f1c-d0cd-42ae-bf86-d6ec9bd5ec90'
+    vstsFeedPackagePublish: 'testpackage'
+    versionOption: 'patch'
+    packagePublishDescription: 'devops'
